@@ -28,19 +28,14 @@ CREATE TABLE IF NOT EXISTS categories (
 
 -- Insert some default categories
 INSERT INTO categories (category_name, description) VALUES
+    ('Housing', 'Mortgage, maintenance, repairs, improvements'),
     ('Groceries', 'Food and household supplies'),
-    ('Transportation', 'Gas, maintenance, public transit'),
-    ('Utilities', 'Electric, water, internet, phone'),
-    ('Healthcare', 'Medical, dental, pharmacy'),
-    ('Entertainment', 'Movies, games, subscriptions'),
-    ('Dining Out', 'Restaurants and takeout'),
     ('Clothing', 'Apparel and accessories'),
     ('Education', 'Books, courses, school supplies'),
-    ('Home', 'Maintenance, repairs, improvements'),
-    ('Insurance', 'Home, auto, health insurance'),
-    ('Personal Care', 'Haircuts, hygiene products'),
-    ('Gifts', 'Presents and donations'),
-    ('Savings', 'Emergency fund, investments'),
+    ('Transportation', 'Gas, maintenance, public transit'),
+    ('Communications', 'Internet, phone'),
+    ('Health', 'Medical, dental, pharmacy'),
+    ('Recreation', 'Movies, games, subscriptions'),
     ('Other', 'Miscellaneous expenses')
 ON DUPLICATE KEY UPDATE category_name=category_name;
 
