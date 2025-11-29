@@ -1,5 +1,5 @@
 # Expense Tracker Shiny Application
-# Version 1.0
+# Version 2.0 - Supports both environment variables and config file
 
 # Load required libraries
 library(shiny)
@@ -13,9 +13,67 @@ library(ggplot2)
 library(plotly)
 library(tidyr)
 
-# Database configuration
-# Note: In production, store these in environment variables or config file
-#source("config.R")
+# ============================================================================
+# DATABASE CONFIGURATION - SUPPORTS MULTIPLE METHODS
+# ============================================================================
+
+# Method 1: Try to load from environment variables (Posit Connect, Docker, etc.)
+# Method 2: Try to load from config file if it exists
+# Method 3: Use default values (will likely fail connection but allows app to load)
+
+get_db_config <- function() {
+  config <- list()
+  
+  # First, try environment variables (highest priority)
+  if (Sys.getenv("EXPENSE_DB_HOST") != "") {
+    config$host <- Sys.getenv("EXPENSE_DB_HOST")
+    config$dbname <- Sys.getenv("EXPENSE_DB_NAME", "expense_tracker")
+    config$user <- Sys.getenv("EXPENSE_DB_USER")
+    config$password <- Sys.getenv("EXPENSE_DB_PASSWORD")
+    config$port <- as.integer(Sys.getenv("EXPENSE_DB_PORT", "3306"))
+    config$source <- "environment variables"
+    
+  # Second, try config file if it exists
+  } else if (file.exists("config.R")) {
+    # Source the config file in a safe environment
+    config_env <- new.env()
+    source("config.R", local = config_env)
+    
+    # Check if variables are set in config file
+    if (exists("DB_HOST", envir = config_env)) {
+      config$host <- config_env$DB_HOST
+      config$dbname <- get0("DB_NAME", envir = config_env, ifnotfound = "expense_tracker")
+      config$user <- config_env$DB_USER
+      config$password <- config_env$DB_PASSWORD
+      config$port <- get0("DB_PORT", envir = config_env, ifnotfound = 3306)
+      config$source <- "config.R file"
+    } else {
+      # Config file exists but doesn't have the expected variables
+      config <- use_defaults()
+      config$source <- "defaults (config.R invalid)"
+    }
+    
+  # Finally, use defaults (app will load but connection will likely fail)
+  } else {
+    config <- use_defaults()
+    config$source <- "defaults (no configuration found)"
+  }
+  
+  return(config)
+}
+
+use_defaults <- function() {
+  list(
+    host = "mexico.bbfarm.org",
+    dbname = "expense_tracker",
+    user = "your_username",
+    password = "your_password",
+    port = 3306
+  )
+}
+
+# Load configuration
+db_config <- get_db_config()
 
 # Function to get database connection
 get_db_connection <- function() {
@@ -29,14 +87,29 @@ get_db_connection <- function() {
       port = db_config$port
     )
   }, error = function(e) {
-    stop(paste("Database connection failed:", e$message))
+    stop(paste("Database connection failed:", e$message, 
+               "\nConfiguration source:", db_config$source))
   })
 }
 
-# UI Definition
+# Function to test if configuration is valid
+test_db_config <- function() {
+  tryCatch({
+    con <- get_db_connection()
+    dbDisconnect(con)
+    return(TRUE)
+  }, error = function(e) {
+    return(FALSE)
+  })
+}
+
+# ============================================================================
+# UI DEFINITION
+# ============================================================================
+
 ui <- dashboardPage(
   dashboardHeader(title = "Family Expense Tracker"),
-
+  
   dashboardSidebar(
     sidebarMenu(
       menuItem("Add Expense", tabName = "add_expense", icon = icon("plus-circle")),
@@ -45,7 +118,7 @@ ui <- dashboardPage(
       menuItem("Settings", tabName = "settings", icon = icon("cog"))
     )
   ),
-
+  
   dashboardBody(
     tags$head(
       tags$style(HTML("
@@ -59,9 +132,29 @@ ui <- dashboardPage(
           background-color: #3c8dbc;
           border-color: #367fa9;
         }
+        .config-info {
+          background-color: #f0f0f0;
+          padding: 10px;
+          border-radius: 5px;
+          margin-bottom: 10px;
+        }
+        .config-success {
+          color: #00a65a;
+        }
+        .config-error {
+          color: #dd4b39;
+        }
       "))
     ),
-
+    
+    # Show configuration status at the top if there's an issue
+    conditionalPanel(
+      condition = "output.show_config_warning",
+      div(class = "config-info",
+        htmlOutput("config_status_banner")
+      )
+    ),
+    
     tabItems(
       # Add Expense Tab
       tabItem(
@@ -72,25 +165,25 @@ ui <- dashboardPage(
             status = "primary",
             solidHeader = TRUE,
             width = 12,
-
+            
             fluidRow(
               column(4,
-                dateInput("expense_date", "Date:",
+                dateInput("expense_date", "Date:", 
                          value = Sys.Date(),
                          max = Sys.Date())
               ),
               column(4,
-                textInput("vendor", "Vendor:",
+                textInput("vendor", "Vendor:", 
                          placeholder = "Where was the purchase made?")
               ),
               column(4,
-                numericInput("amount", "Amount ($):",
-                            value = 0,
-                            min = 0,
+                numericInput("amount", "Amount ($):", 
+                            value = 0, 
+                            min = 0, 
                             step = 0.01)
               )
             ),
-
+            
             fluidRow(
               column(4,
                 selectInput("category", "Category:",
@@ -106,7 +199,7 @@ ui <- dashboardPage(
                          placeholder = "Enter name if not in list")
               )
             ),
-
+            
             fluidRow(
               column(12,
                 textAreaInput("note", "Notes:",
@@ -115,18 +208,18 @@ ui <- dashboardPage(
                             width = "100%")
               )
             ),
-
+            
             fluidRow(
               column(12,
-                actionButton("add_expense_btn", "Add Expense",
+                actionButton("add_expense_btn", "Add Expense", 
                            class = "btn-primary btn-lg"),
-                actionButton("clear_form_btn", "Clear Form",
+                actionButton("clear_form_btn", "Clear Form", 
                            class = "btn-default btn-lg")
               )
             )
           )
         ),
-
+        
         fluidRow(
           box(
             title = "Recent Expenses",
@@ -137,7 +230,7 @@ ui <- dashboardPage(
           )
         )
       ),
-
+      
       # View Expenses Tab
       tabItem(
         tabName = "view_expenses",
@@ -148,7 +241,7 @@ ui <- dashboardPage(
             solidHeader = TRUE,
             collapsible = TRUE,
             width = 12,
-
+            
             fluidRow(
               column(3,
                 dateRangeInput("date_range", "Date Range:",
@@ -173,7 +266,7 @@ ui <- dashboardPage(
             )
           )
         ),
-
+        
         fluidRow(
           box(
             title = "All Expenses",
@@ -184,7 +277,7 @@ ui <- dashboardPage(
           )
         )
       ),
-
+      
       # Reports Tab
       tabItem(
         tabName = "reports",
@@ -194,7 +287,7 @@ ui <- dashboardPage(
             status = "primary",
             solidHeader = TRUE,
             width = 12,
-
+            
             fluidRow(
               column(4,
                 selectInput("report_type", "Report Type:",
@@ -216,7 +309,7 @@ ui <- dashboardPage(
             )
           )
         ),
-
+        
         fluidRow(
           box(
             title = "Summary Statistics",
@@ -226,7 +319,7 @@ ui <- dashboardPage(
             uiOutput("summary_stats")
           )
         ),
-
+        
         fluidRow(
           box(
             title = "Report Visualization",
@@ -236,7 +329,7 @@ ui <- dashboardPage(
             plotlyOutput("report_plot", height = "400px")
           )
         ),
-
+        
         fluidRow(
           box(
             title = "Detailed Report",
@@ -247,17 +340,48 @@ ui <- dashboardPage(
           )
         )
       ),
-
+      
       # Settings Tab
       tabItem(
         tabName = "settings",
+        fluidRow(
+          box(
+            title = "Configuration Status",
+            status = "primary",
+            solidHeader = TRUE,
+            width = 12,
+            htmlOutput("config_details"),
+            hr(),
+            h4("Configuration Instructions"),
+            HTML("
+              <p>This app supports two configuration methods:</p>
+              <ol>
+                <li><strong>Environment Variables (Recommended for Posit Connect):</strong>
+                  <ul>
+                    <li>EXPENSE_DB_HOST - Database host (e.g., mexico.bbfarm.org)</li>
+                    <li>EXPENSE_DB_NAME - Database name (default: expense_tracker)</li>
+                    <li>EXPENSE_DB_USER - Database username</li>
+                    <li>EXPENSE_DB_PASSWORD - Database password</li>
+                    <li>EXPENSE_DB_PORT - Database port (default: 3306)</li>
+                  </ul>
+                </li>
+                <li><strong>Config File (For local development):</strong>
+                  <ul>
+                    <li>Create a file named config.R with DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT variables</li>
+                  </ul>
+                </li>
+              </ol>
+            ")
+          )
+        ),
+        
         fluidRow(
           box(
             title = "Manage Categories",
             status = "warning",
             solidHeader = TRUE,
             width = 6,
-
+            
             textInput("new_category", "Add New Category:"),
             textInput("category_description", "Description:"),
             actionButton("add_category_btn", "Add Category",
@@ -265,13 +389,13 @@ ui <- dashboardPage(
             hr(),
             DT::dataTableOutput("categories_table")
           ),
-
+          
           box(
             title = "Manage Buyers",
             status = "warning",
             solidHeader = TRUE,
             width = 6,
-
+            
             textInput("new_buyer_setting", "Add New Buyer:"),
             textInput("buyer_email", "Email (optional):"),
             actionButton("add_buyer_btn", "Add Buyer",
@@ -280,7 +404,7 @@ ui <- dashboardPage(
             DT::dataTableOutput("buyers_table")
           )
         ),
-
+        
         fluidRow(
           box(
             title = "Database Status",
@@ -295,26 +419,74 @@ ui <- dashboardPage(
   )
 )
 
-# Server Logic
-server <- function(input, output, session) {
+# ============================================================================
+# SERVER LOGIC
+# ============================================================================
 
+server <- function(input, output, session) {
+  
   # Reactive values
   values <- reactiveValues(
     categories = NULL,
     buyers = NULL,
     expenses = NULL,
-    db_connected = FALSE
+    db_connected = FALSE,
+    config_valid = FALSE
   )
-
+  
+  # Check configuration validity on startup
+  observe({
+    values$config_valid <- test_db_config()
+  })
+  
+  # Configuration status banner (shown if there's an issue)
+  output$show_config_warning <- reactive({
+    !values$config_valid
+  })
+  outputOptions(output, "show_config_warning", suspendWhenHidden = FALSE)
+  
+  output$config_status_banner <- renderUI({
+    if (!values$config_valid) {
+      HTML(paste0(
+        "<div class='config-error'>",
+        "<strong>⚠️ Database Configuration Issue</strong><br>",
+        "Configuration source: ", db_config$source, "<br>",
+        "Please check your database settings in the Settings tab.",
+        "</div>"
+      ))
+    }
+  })
+  
+  # Configuration details (shown in Settings tab)
+  output$config_details <- renderUI({
+    status_icon <- if(values$config_valid) "✅" else "❌"
+    status_class <- if(values$config_valid) "config-success" else "config-error"
+    status_text <- if(values$config_valid) "Connected" else "Not Connected"
+    
+    HTML(paste0(
+      "<div class='", status_class, "'>",
+      "<h4>", status_icon, " Database Status: ", status_text, "</h4>",
+      "</div>",
+      "<table class='table table-striped'>",
+      "<tr><td><strong>Configuration Source:</strong></td><td>", db_config$source, "</td></tr>",
+      "<tr><td><strong>Host:</strong></td><td>", db_config$host, "</td></tr>",
+      "<tr><td><strong>Database:</strong></td><td>", db_config$dbname, "</td></tr>",
+      "<tr><td><strong>Port:</strong></td><td>", db_config$port, "</td></tr>",
+      "<tr><td><strong>User:</strong></td><td>", db_config$user, "</td></tr>",
+      "<tr><td><strong>Password:</strong></td><td>", strrep("*", nchar(db_config$password)), "</td></tr>",
+      "</table>"
+    ))
+  })
+  
   # Initialize database connection and load data
   observe({
     tryCatch({
       con <- get_db_connection()
-
+      
       # Load categories
       categories_query <- "SELECT category_name FROM categories ORDER BY category_name"
       values$categories <- dbGetQuery(con, categories_query)$category_name
-
+      
       # Load buyers
       buyers_query <- "SELECT DISTINCT buyer_name FROM buyers ORDER BY buyer_name"
       buyers_result <- dbGetQuery(con, buyers_query)
@@ -323,11 +495,11 @@ server <- function(input, output, session) {
       } else {
         values$buyers <- c("Add a buyer in Settings")
       }
-
+      
       values$db_connected = TRUE
-
+      
       dbDisconnect(con)
-
+      
       # Update UI elements
       updateSelectInput(session, "category",
                        choices = values$categories)
@@ -337,49 +509,50 @@ server <- function(input, output, session) {
                        choices = c("All" = "", values$categories))
       updateSelectInput(session, "filter_buyer",
                        choices = c("All" = "", values$buyers))
-
+      
     }, error = function(e) {
-      showNotification(paste("Database connection error:", e$message),
+      showNotification(paste("Database connection error:", e$message,
+                           "\nSource:", db_config$source),
                       type = "error",
                       duration = 10)
       values$db_connected = FALSE
     })
   })
-
+  
   # Add Expense
   observeEvent(input$add_expense_btn, {
     req(input$expense_date, input$vendor, input$amount)
-
+    
     # Determine buyer
-    buyer_to_use <- ifelse(nchar(input$new_buyer) > 0,
-                           input$new_buyer,
+    buyer_to_use <- ifelse(nchar(input$new_buyer) > 0, 
+                           input$new_buyer, 
                            input$buyer)
-
+    
     if (is.null(buyer_to_use) || buyer_to_use == "" || buyer_to_use == "Add a buyer in Settings") {
       showNotification("Please select or enter a buyer name",
                       type = "error")
       return()
     }
-
+    
     tryCatch({
       con <- get_db_connection()
-
+      
       # Add new buyer if needed
       if (nchar(input$new_buyer) > 0) {
-        buyer_check <- dbGetQuery(con,
+        buyer_check <- dbGetQuery(con, 
           sprintf("SELECT COUNT(*) as count FROM buyers WHERE buyer_name = '%s'",
                   dbEscapeStrings(con, input$new_buyer)))
-
+        
         if (buyer_check$count == 0) {
           dbExecute(con,
             sprintf("INSERT INTO buyers (buyer_name) VALUES ('%s')",
                     dbEscapeStrings(con, input$new_buyer)))
         }
       }
-
+      
       # Insert expense
       insert_query <- sprintf(
-        "INSERT INTO expenses (expense_date, vendor, amount, category, buyer, note)
+        "INSERT INTO expenses (expense_date, vendor, amount, category, buyer, note) 
          VALUES ('%s', '%s', %f, '%s', '%s', '%s')",
         format(input$expense_date, "%Y-%m-%d"),
         dbEscapeStrings(con, input$vendor),
@@ -388,39 +561,39 @@ server <- function(input, output, session) {
         dbEscapeStrings(con, buyer_to_use),
         dbEscapeStrings(con, input$note)
       )
-
+      
       dbExecute(con, insert_query)
       dbDisconnect(con)
-
+      
       showNotification("Expense added successfully!",
                       type = "success")
-
+      
       # Clear form
       updateTextInput(session, "vendor", value = "")
       updateNumericInput(session, "amount", value = 0)
       updateTextInput(session, "new_buyer", value = "")
       updateTextAreaInput(session, "note", value = "")
-
+      
       # Refresh buyers list if new buyer was added
       if (nchar(input$new_buyer) > 0) {
         con <- get_db_connection()
-        buyers_result <- dbGetQuery(con,
+        buyers_result <- dbGetQuery(con, 
           "SELECT DISTINCT buyer_name FROM buyers ORDER BY buyer_name")
         values$buyers <- buyers_result$buyer_name
         dbDisconnect(con)
-
+        
         updateSelectInput(session, "buyer", choices = values$buyers,
                          selected = buyer_to_use)
         updateSelectInput(session, "filter_buyer",
                          choices = c("All" = "", values$buyers))
       }
-
+      
     }, error = function(e) {
       showNotification(paste("Error adding expense:", e$message),
                       type = "error")
     })
   })
-
+  
   # Clear Form
   observeEvent(input$clear_form_btn, {
     updateDateInput(session, "expense_date", value = Sys.Date())
@@ -429,28 +602,32 @@ server <- function(input, output, session) {
     updateTextInput(session, "new_buyer", value = "")
     updateTextAreaInput(session, "note", value = "")
   })
-
+  
   # Recent Expenses Table
   output$recent_expenses <- DT::renderDataTable({
     invalidateLater(5000)  # Refresh every 5 seconds
-
+    
+    if (!values$db_connected) {
+      return(DT::datatable(data.frame(Message = "Database not connected. Please check Settings.")))
+    }
+    
     tryCatch({
       con <- get_db_connection()
       recent_query <- "
-        SELECT
+        SELECT 
           expense_date as Date,
           vendor as Vendor,
           CONCAT('$', FORMAT(amount, 2)) as Amount,
           category as Category,
           buyer as Buyer,
           note as Note
-        FROM expenses
-        ORDER BY created_at DESC
+        FROM expenses 
+        ORDER BY created_at DESC 
         LIMIT 10
       "
       recent_data <- dbGetQuery(con, recent_query)
       dbDisconnect(con)
-
+      
       DT::datatable(recent_data,
                    options = list(
                      pageLength = 5,
@@ -461,42 +638,46 @@ server <- function(input, output, session) {
       DT::datatable(data.frame(Message = "Unable to load recent expenses"))
     })
   })
-
+  
   # All Expenses Table
   output$all_expenses <- DT::renderDataTable({
     input$apply_filters  # Trigger on filter apply
-
+    
+    if (!values$db_connected) {
+      return(DT::datatable(data.frame(Message = "Database not connected. Please check Settings.")))
+    }
+    
     tryCatch({
       con <- get_db_connection()
-
+      
       # Build query with filters
       where_clauses <- c()
-
+      
       if (!is.null(input$date_range)) {
         where_clauses <- c(where_clauses,
           sprintf("expense_date BETWEEN '%s' AND '%s'",
                   format(input$date_range[1], "%Y-%m-%d"),
                   format(input$date_range[2], "%Y-%m-%d")))
       }
-
+      
       if (!is.null(input$filter_category) && length(input$filter_category) > 0 && input$filter_category[1] != "") {
         categories_list <- paste0("'", input$filter_category, "'", collapse = ", ")
         where_clauses <- c(where_clauses,
           sprintf("category IN (%s)", categories_list))
       }
-
+      
       if (!is.null(input$filter_buyer) && length(input$filter_buyer) > 0 && input$filter_buyer[1] != "") {
         buyers_list <- paste0("'", input$filter_buyer, "'", collapse = ", ")
         where_clauses <- c(where_clauses,
           sprintf("buyer IN (%s)", buyers_list))
       }
-
+      
       where_clause <- ifelse(length(where_clauses) > 0,
                             paste("WHERE", paste(where_clauses, collapse = " AND ")),
                             "")
-
+      
       query <- sprintf("
-        SELECT
+        SELECT 
           id as ID,
           expense_date as Date,
           vendor as Vendor,
@@ -505,14 +686,14 @@ server <- function(input, output, session) {
           buyer as Buyer,
           note as Note,
           created_at as 'Added On'
-        FROM expenses
+        FROM expenses 
         %s
         ORDER BY expense_date DESC, created_at DESC
       ", where_clause)
-
+      
       data <- dbGetQuery(con, query)
       dbDisconnect(con)
-
+      
       DT::datatable(data,
                    options = list(
                      pageLength = 25,
@@ -525,21 +706,27 @@ server <- function(input, output, session) {
       DT::datatable(data.frame(Message = paste("Error loading expenses:", e$message)))
     })
   })
-
+  
   # Generate Report
   observeEvent(input$generate_report, {
     req(input$report_type, input$report_date_range)
-
+    
+    if (!values$db_connected) {
+      showNotification("Database not connected. Please check Settings.",
+                      type = "error")
+      return()
+    }
+    
     tryCatch({
       con <- get_db_connection()
-
+      
       start_date <- format(input$report_date_range[1], "%Y-%m-%d")
       end_date <- format(input$report_date_range[2], "%Y-%m-%d")
-
+      
       # Generate appropriate report based on selection
       if (input$report_type == "monthly") {
         query <- sprintf("
-          SELECT
+          SELECT 
             YEAR(expense_date) as Year,
             MONTHNAME(expense_date) as Month,
             category as Category,
@@ -550,10 +737,10 @@ server <- function(input, output, session) {
           GROUP BY YEAR(expense_date), MONTH(expense_date), category
           ORDER BY YEAR(expense_date) DESC, MONTH(expense_date) DESC, SUM(amount) DESC
         ", start_date, end_date)
-
+        
       } else if (input$report_type == "weekly") {
         query <- sprintf("
-          SELECT
+          SELECT 
             DATE_SUB(expense_date, INTERVAL WEEKDAY(expense_date) DAY) as 'Week Starting',
             category as Category,
             SUM(amount) as Total,
@@ -563,10 +750,10 @@ server <- function(input, output, session) {
           GROUP BY YEARWEEK(expense_date), category
           ORDER BY YEARWEEK(expense_date) DESC, SUM(amount) DESC
         ", start_date, end_date)
-
+        
       } else if (input$report_type == "category") {
         query <- sprintf("
-          SELECT
+          SELECT 
             category as Category,
             SUM(amount) as 'Total Spent',
             COUNT(*) as 'Number of Transactions',
@@ -578,10 +765,10 @@ server <- function(input, output, session) {
           GROUP BY category
           ORDER BY SUM(amount) DESC
         ", start_date, end_date)
-
+        
       } else if (input$report_type == "buyer") {
         query <- sprintf("
-          SELECT
+          SELECT 
             buyer as Buyer,
             SUM(amount) as 'Total Spent',
             COUNT(*) as 'Number of Transactions',
@@ -593,12 +780,12 @@ server <- function(input, output, session) {
           ORDER BY SUM(amount) DESC
         ", start_date, end_date)
       }
-
+      
       report_data <- dbGetQuery(con, query)
-
+      
       # Get summary statistics
       summary_query <- sprintf("
-        SELECT
+        SELECT 
           COUNT(*) as total_transactions,
           SUM(amount) as total_spent,
           AVG(amount) as avg_transaction,
@@ -607,17 +794,17 @@ server <- function(input, output, session) {
         FROM expenses
         WHERE expense_date BETWEEN '%s' AND '%s'
       ", start_date, end_date)
-
+      
       summary_data <- dbGetQuery(con, summary_query)
-
+      
       dbDisconnect(con)
-
+      
       # Update summary statistics
       output$summary_stats <- renderUI({
         fluidRow(
           column(2,
             valueBox(
-              value = paste0("$", format(round(summary_data$total_spent, 2),
+              value = paste0("$", format(round(summary_data$total_spent, 2), 
                                         big.mark = ",")),
               subtitle = "Total Spent",
               color = "green",
@@ -658,8 +845,8 @@ server <- function(input, output, session) {
           ),
           column(2,
             valueBox(
-              value = as.integer(difftime(input$report_date_range[2],
-                                         input$report_date_range[1],
+              value = as.integer(difftime(input$report_date_range[2], 
+                                         input$report_date_range[1], 
                                          units = "days")),
               subtitle = "Days in Period",
               color = "purple",
@@ -668,7 +855,7 @@ server <- function(input, output, session) {
           )
         )
       })
-
+      
       # Create visualization
       output$report_plot <- renderPlotly({
         if (nrow(report_data) > 0) {
@@ -677,40 +864,40 @@ server <- function(input, output, session) {
             report_data$MonthNum <- match(report_data$Month, month.name)
             report_data <- report_data %>%
               arrange(Year, MonthNum)
-
-            p <- plot_ly(report_data,
-                        x = ~paste(Month, Year),
-                        y = ~Total,
+            
+            p <- plot_ly(report_data, 
+                        x = ~paste(Month, Year), 
+                        y = ~Total, 
                         color = ~Category,
                         type = 'bar') %>%
               layout(title = "Monthly Expenses by Category",
                     xaxis = list(title = "Month"),
                     yaxis = list(title = "Amount ($)"),
                     barmode = 'stack')
-
+            
           } else if (input$report_type == "weekly") {
-            p <- plot_ly(report_data,
-                        x = ~`Week Starting`,
-                        y = ~Total,
+            p <- plot_ly(report_data, 
+                        x = ~`Week Starting`, 
+                        y = ~Total, 
                         color = ~Category,
                         type = 'bar') %>%
               layout(title = "Weekly Expenses by Category",
                     xaxis = list(title = "Week Starting"),
                     yaxis = list(title = "Amount ($)"),
                     barmode = 'stack')
-
+            
           } else if (input$report_type == "category") {
-            p <- plot_ly(report_data,
-                        labels = ~Category,
+            p <- plot_ly(report_data, 
+                        labels = ~Category, 
                         values = ~`Total Spent`,
                         type = 'pie',
                         textinfo = 'label+percent',
                         hovertemplate = '%{label}<br>$%{value:,.2f}<br>%{percent}<extra></extra>') %>%
               layout(title = "Expense Distribution by Category")
-
+            
           } else if (input$report_type == "buyer") {
-            p <- plot_ly(report_data,
-                        x = ~Buyer,
+            p <- plot_ly(report_data, 
+                        x = ~Buyer, 
                         y = ~`Total Spent`,
                         type = 'bar',
                         marker = list(color = 'rgba(50, 171, 96, 0.7)')) %>%
@@ -718,14 +905,14 @@ server <- function(input, output, session) {
                     xaxis = list(title = "Buyer"),
                     yaxis = list(title = "Amount ($)"))
           }
-
+          
           p
         } else {
           plotly_empty() %>%
             layout(title = "No data available for selected period")
         }
       })
-
+      
       # Update report table
       output$report_table <- DT::renderDataTable({
         DT::datatable(report_data,
@@ -734,62 +921,74 @@ server <- function(input, output, session) {
                        scrollX = TRUE
                      ),
                      extensions = 'Buttons') %>%
-          formatCurrency(columns = which(names(report_data) %in%
+          formatCurrency(columns = which(names(report_data) %in% 
                                         c("Total", "Total Spent", "Average Transaction",
                                           "Smallest", "Largest")),
                         currency = "$")
       })
-
+      
     }, error = function(e) {
       showNotification(paste("Error generating report:", e$message),
                       type = "error")
     })
   })
-
+  
   # Add Category
   observeEvent(input$add_category_btn, {
     req(input$new_category)
-
+    
+    if (!values$db_connected) {
+      showNotification("Database not connected. Please check Settings.",
+                      type = "error")
+      return()
+    }
+    
     tryCatch({
       con <- get_db_connection()
-
+      
       insert_query <- sprintf(
         "INSERT INTO categories (category_name, description) VALUES ('%s', '%s')
          ON DUPLICATE KEY UPDATE description = VALUES(description)",
         dbEscapeStrings(con, input$new_category),
         dbEscapeStrings(con, input$category_description)
       )
-
+      
       dbExecute(con, insert_query)
-
+      
       # Refresh categories
       categories_query <- "SELECT category_name FROM categories ORDER BY category_name"
       values$categories <- dbGetQuery(con, categories_query)$category_name
-
+      
       dbDisconnect(con)
-
+      
       updateSelectInput(session, "category", choices = values$categories)
       updateSelectInput(session, "filter_category",
                        choices = c("All" = "", values$categories))
       updateTextInput(session, "new_category", value = "")
       updateTextInput(session, "category_description", value = "")
-
+      
       showNotification("Category added successfully!",
                       type = "success")
-
+      
     }, error = function(e) {
       showNotification(paste("Error adding category:", e$message),
                       type = "error")
     })
   })
-
+  
   # Add Buyer
   observeEvent(input$add_buyer_btn, {
     req(input$new_buyer_setting)
-
+    
+    if (!values$db_connected) {
+      showNotification("Database not connected. Please check Settings.",
+                      type = "error")
+      return()
+    }
+    
     tryCatch({
       con <- get_db_connection()
-
+      
       insert_query <- sprintf(
         "INSERT INTO buyers (buyer_name, email) VALUES ('%s', %s)
          ON DUPLICATE KEY UPDATE email = VALUES(email)",
@@ -798,41 +997,45 @@ server <- function(input, output, session) {
                sprintf("'%s'", dbEscapeStrings(con, input$buyer_email)),
                "NULL")
       )
-
+      
       dbExecute(con, insert_query)
-
+      
       # Refresh buyers
       buyers_query <- "SELECT DISTINCT buyer_name FROM buyers ORDER BY buyer_name"
       values$buyers <- dbGetQuery(con, buyers_query)$buyer_name
-
+      
       dbDisconnect(con)
-
+      
       updateSelectInput(session, "buyer", choices = values$buyers)
       updateSelectInput(session, "filter_buyer",
                        choices = c("All" = "", values$buyers))
       updateTextInput(session, "new_buyer_setting", value = "")
       updateTextInput(session, "buyer_email", value = "")
-
+      
       showNotification("Buyer added successfully!",
                       type = "success")
-
+      
     }, error = function(e) {
       showNotification(paste("Error adding buyer:", e$message),
                       type = "error")
     })
   })
-
+  
   # Categories Table
   output$categories_table <- DT::renderDataTable({
     invalidateLater(10000)  # Refresh every 10 seconds
-
+    
+    if (!values$db_connected) {
+      return(DT::datatable(data.frame(Message = "Database not connected")))
+    }
+    
     tryCatch({
       con <- get_db_connection()
-      categories_data <- dbGetQuery(con,
-        "SELECT category_name as Category, description as Description
+      categories_data <- dbGetQuery(con, 
+        "SELECT category_name as Category, description as Description 
          FROM categories ORDER BY category_name")
       dbDisconnect(con)
-
+      
       DT::datatable(categories_data,
                    options = list(
                      pageLength = 5,
@@ -842,18 +1045,22 @@ server <- function(input, output, session) {
       DT::datatable(data.frame(Message = "Unable to load categories"))
     })
   })
-
+  
   # Buyers Table
   output$buyers_table <- DT::renderDataTable({
     invalidateLater(10000)  # Refresh every 10 seconds
-
+    
+    if (!values$db_connected) {
+      return(DT::datatable(data.frame(Message = "Database not connected")))
+    }
+    
     tryCatch({
       con <- get_db_connection()
-      buyers_data <- dbGetQuery(con,
-        "SELECT buyer_name as Buyer, email as Email
+      buyers_data <- dbGetQuery(con, 
+        "SELECT buyer_name as Buyer, email as Email 
          FROM buyers ORDER BY buyer_name")
       dbDisconnect(con)
-
+      
       DT::datatable(buyers_data,
                    options = list(
                      pageLength = 5,
@@ -863,26 +1070,27 @@ server <- function(input, output, session) {
       DT::datatable(data.frame(Message = "Unable to load buyers"))
     })
   })
-
+  
   # Database Status
   output$db_status <- renderPrint({
     if (values$db_connected) {
       tryCatch({
         con <- get_db_connection()
-
+        
         # Get some statistics
         stats <- dbGetQuery(con, "
-          SELECT
+          SELECT 
             (SELECT COUNT(*) FROM expenses) as total_expenses,
             (SELECT COUNT(*) FROM categories) as total_categories,
             (SELECT COUNT(*) FROM buyers) as total_buyers,
             (SELECT MAX(created_at) FROM expenses) as last_expense
         ")
-
+        
         dbDisconnect(con)
-
+        
         cat("Database Status: CONNECTED\n")
         cat("=====================================\n")
+        cat("Configuration Source:", db_config$source, "\n")
         cat("Host:", db_config$host, "\n")
         cat("Database:", db_config$dbname, "\n")
         cat("=====================================\n")
@@ -890,14 +1098,20 @@ server <- function(input, output, session) {
         cat("Total Categories:", stats$total_categories, "\n")
         cat("Total Buyers:", stats$total_buyers, "\n")
         cat("Last Expense Added:", as.character(stats$last_expense), "\n")
-
+        
       }, error = function(e) {
         cat("Database Status: ERROR\n")
+        cat("Configuration Source:", db_config$source, "\n")
         cat("Error:", e$message, "\n")
       })
     } else {
       cat("Database Status: NOT CONNECTED\n")
-      cat("Please check your database configuration\n")
+      cat("Configuration Source:", db_config$source, "\n")
+      cat("\nPlease check your database configuration:\n")
+      cat("1. Verify environment variables are set correctly\n")
+      cat("2. Or create a config.R file with database credentials\n")
+      cat("3. Check network connectivity to", db_config$host, "\n")
+      cat("4. Ensure database user has proper privileges\n")
     }
   })
 }
